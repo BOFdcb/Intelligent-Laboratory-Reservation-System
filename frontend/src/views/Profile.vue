@@ -27,6 +27,15 @@
             <span class="info-label">角色</span>
             <span class="info-value">{{ auth.user?.role === 'admin' ? '管理员' : '普通用户' }}</span>
           </div>
+          <div class="info-row">
+            <span class="info-label">信用分</span>
+            <span class="info-value">
+              <el-tag :type="creditType(auth.user?.credit_score)" size="small">
+                {{ auth.user?.credit_score ?? 100 }}
+              </el-tag>
+              <span class="credit-tip">初始 100 分，临期取消扣 5 分，低于 60 分将限制预约</span>
+            </span>
+          </div>
           <el-form :model="form" label-width="80px" class="edit-form">
             <el-form-item label="昵称">
               <el-input v-model="form.nickname" placeholder="请输入昵称" />
@@ -58,6 +67,24 @@ function initForm() {
   form.value.email = auth.user?.email || ''
 }
 
+function creditType(score) {
+  const s = score ?? 100
+  if (s < 60) return 'danger'
+  if (s < 90) return 'warning'
+  return 'success'
+}
+
+async function refreshProfile() {
+  // 登录时缓存的 user 可能没有 credit_score 等新字段，挂载时拉取最新资料
+  try {
+    const me = await api.get('/api/users/me')
+    auth.setUser(me.data)
+    initForm()
+  } catch {
+    // ignore
+  }
+}
+
 async function saveProfile() {
   saving.value = true
   try {
@@ -85,7 +112,7 @@ async function uploadAvatar({ file }) {
   }
 }
 
-onMounted(initForm)
+onMounted(refreshProfile)
 </script>
 
 <style scoped>
@@ -155,5 +182,10 @@ onMounted(initForm)
   margin-top: 20px;
   padding-top: 20px;
   border-top: 1px dashed #ebeef5;
+}
+.credit-tip {
+  margin-left: 10px;
+  font-size: 12px;
+  color: #909399;
 }
 </style>

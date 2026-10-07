@@ -2,14 +2,21 @@
   <div class="admin-bookings-page">
     <div class="page-header">
       <span>预约审核</span>
-      <el-select v-model="filterStatus" placeholder="全部状态" clearable style="width: 160px" @change="page = 1; loadBookings()">
-        <el-option label="全部" value="" />
-        <el-option label="待审核" value="pending" />
-        <el-option label="已通过" value="approved" />
-        <el-option label="已驳回" value="rejected" />
-        <el-option label="已取消" value="cancelled" />
-        <el-option label="已使用" value="used" />
-      </el-select>
+      <div class="header-actions">
+        <el-button size="small" @click="runScheduler" :loading="schedulerLoading">
+          执行定时任务（提醒/催办/释放）
+        </el-button>
+        <el-select v-model="filterStatus" placeholder="全部状态" clearable style="width: 160px" @change="page = 1; loadBookings()">
+          <el-option label="全部" value="" />
+          <el-option label="待人工终审" value="pending" />
+          <el-option label="已通过" value="approved" />
+          <el-option label="已驳回" value="rejected" />
+          <el-option label="已签到" value="confirmed" />
+          <el-option label="已使用" value="used" />
+          <el-option label="已取消" value="cancelled" />
+          <el-option label="超时释放" value="released" />
+        </el-select>
+      </div>
     </div>
 
     <el-table v-loading="loading" :data="bookings" border stripe size="default">
@@ -22,9 +29,10 @@
         </template>
       </el-table-column>
       <el-table-column prop="purpose" label="用途" min-width="180" show-overflow-tooltip />
-      <el-table-column prop="status" label="状态" width="100">
+      <el-table-column prop="status" label="状态" width="140">
         <template #default="{ row }">
           <el-tag :type="statusType(row.status)" size="small">{{ statusText(row.status) }}</el-tag>
+          <el-tag v-if="row.auto_reviewed" type="success" size="small" effect="plain" class="ai-tag">AI 审核</el-tag>
         </template>
       </el-table-column>
       <el-table-column prop="created_at" label="创建时间" width="160">
@@ -81,14 +89,15 @@ const rejectVisible = ref(false)
 const rejectLoading = ref(false)
 const reviewNote = ref('')
 const currentBooking = ref(null)
+const schedulerLoading = ref(false)
 
 function statusType(status) {
-  const map = { pending: 'warning', approved: 'success', rejected: 'danger', cancelled: 'info', used: 'primary' }
+  const map = { pending: 'warning', approved: 'success', rejected: 'danger', cancelled: 'info', confirmed: 'primary', used: 'primary', released: 'danger' }
   return map[status] || 'info'
 }
 
 function statusText(status) {
-  const map = { pending: '待审核', approved: '已通过', rejected: '已驳回', cancelled: '已取消', used: '已使用' }
+  const map = { pending: '待人工终审', approved: '已通过', rejected: '已驳回', cancelled: '已取消', confirmed: '已签到', used: '已使用', released: '超时释放' }
   return map[status] || status
 }
 
@@ -143,6 +152,19 @@ async function submitReject() {
   }
 }
 
+async function runScheduler() {
+  schedulerLoading.value = true
+  try {
+    const res = await api.post('/api/admin/scheduler/run')
+    const d = res.data || {}
+    ElMessage.success(
+      `执行完成：提醒 ${d.reminded || 0} 条，催办 ${d.urged || 0} 条，释放 ${d.released || 0} 条，完成 ${d.finished || 0} 条`
+    )
+  } finally {
+    schedulerLoading.value = false
+  }
+}
+
 onMounted(loadBookings)
 </script>
 
@@ -158,6 +180,14 @@ onMounted(loadBookings)
   font-size: 18px;
   font-weight: 600;
   color: #303133;
+}
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.ai-tag {
+  margin-left: 4px;
 }
 .pagination {
   margin-top: 20px;

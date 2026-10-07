@@ -8,10 +8,15 @@
 
 LangGraph 核心概念对照：
 - StateGraph : 状态图，节点之间共享并传递 AgentState
-- State      : AgentState，包含 messages(消息列表) / rounds(轮次) / db / user_id
+- State      : AgentState，包含 messages/rounds/db/user/events
 - Node       : llm 节点（大模型决策）、tools 节点（执行工具）
 - Edge       : START->llm、tools->llm（固定边）
 - Conditional Edge : should_continue，根据最新消息是否含 tool_calls 决定走向
+
+安全治理（D）：
+- llm 节点按当前用户角色下发工具声明（学生看不到管理员工具）；
+- tools 节点执行前二次校验角色（双保险，防止提示词注入诱导越权）；
+- 每次工具调用写 tool_audit_logs 审计日志。
 """
 import json
 from typing import TypedDict
@@ -21,9 +26,11 @@ from sqlalchemy.orm import Session
 
 from .config import settings
 from .llm import get_llm_client
-from .tools import TOOLS_SCHEMA, TOOL_DISPATCH
+from .models import ToolAuditLog, User
+from .tools import TOOL_DISPATCH, is_tool_allowed, schemas_for_role
 
 MAX_ROUNDS = 8  # 最多 8 轮工具调用，防死循环
+AUDIT_RESULT_LIMIT = 1000  # 审计日志结果摘要最大字符数
 
 
 class AgentState(TypedDict):
@@ -32,17 +39,19 @@ class AgentState(TypedDict):
     messages: list[dict]  # OpenAI 格式的对话消息（system/user/assistant/tool）
     rounds: int           # 已执行的 LLM 轮次
     db: Session           # 数据库会话（工具节点使用）
-    user_id: int          # 当前用户 ID（create_booking 使用）
+    user: User            # 当前用户 ORM 对象（工具读取 id/role/信用分）
     events: list[dict]    # 过程事件（tool_call / tool_result），供 SSE 输出
 
 
 # ---------- 节点 1：调用大模型（决策下一步） ----------
 def llm_node(state: AgentState) -> dict:
     client = get_llm_client()
+    # 按角色裁剪工具列表：学生请求里不会出现任何管理员工具的声明
+    tools_schema = schemas_for_role(state["user"].role)
     resp = client.chat.completions.create(
         model=settings.LLM_MODEL,
         messages=state["messages"],
-        tools=TOOLS_SCHEMA,
+        tools=tools_schema,
         tool_choice="auto",
     )
     msg = resp.choices[0].message
@@ -63,8 +72,29 @@ def llm_node(state: AgentState) -> dict:
     }
 
 
+def _write_audit_log(db: Session, user: User, tool_name: str, args: dict,
+                     result: dict, success: bool) -> None:
+    """审计日志落库。日志失败不能影响主流程，故吞掉异常。"""
+    try:
+        summary = result.get("error") if not success and isinstance(result, dict) else json.dumps(
+            result, ensure_ascii=False
+        )
+        db.add(ToolAuditLog(
+            user_id=user.id, username=user.username, role=user.role,
+            tool_name=tool_name,
+            arguments_json=json.dumps(args, ensure_ascii=False)[:AUDIT_RESULT_LIMIT],
+            success=success,
+            result_summary=(summary or "")[:AUDIT_RESULT_LIMIT],
+        ))
+        db.commit()
+    except Exception:
+        db.rollback()
+
+
 # ---------- 节点 2：执行工具调用 ----------
 def tools_node(state: AgentState) -> dict:
+    user = state["user"]
+    db = state["db"]
     last = state["messages"][-1]
     new_messages = list(state["messages"])
     events = list(state["events"])
@@ -74,14 +104,26 @@ def tools_node(state: AgentState) -> dict:
             args = json.loads(tc["function"].get("arguments") or "{}")
         except json.JSONDecodeError:
             args = {}
-        func = TOOL_DISPATCH.get(name)
-        if not func:
-            result = {"error": f"未知工具 {name}"}
+
+        # 越权拦截：即使模型（或被提示词注入）下发了越权工具，也在执行层拒绝
+        if not is_tool_allowed(name, user.role):
+            result = {"error": f"权限不足：工具 {name} 仅管理员可用"}
+            _write_audit_log(db, user, name, args, result, success=False)
         else:
-            try:
-                result = func(state["db"], user_id=state["user_id"], **args)
-            except Exception as e:
-                result = {"error": str(e)}
+            func = TOOL_DISPATCH.get(name)
+            if not func:
+                result = {"error": f"未知工具 {name}"}
+                _write_audit_log(db, user, name, args, result, success=False)
+            else:
+                try:
+                    result = func(db, user=user, **args)
+                    # 工具返回 error 视为业务失败（如冲突、频率限制），审计标红
+                    _write_audit_log(db, user, name, args, result,
+                                     success=not (isinstance(result, dict) and "error" in result))
+                except Exception as e:
+                    result = {"error": str(e)}
+                    _write_audit_log(db, user, name, args, result, success=False)
+
         new_messages.append({
             "role": "tool",
             "tool_call_id": tc["id"],
@@ -106,43 +148,28 @@ def build_agent_graph():
     再用线（边）把它们连起来，最后编译成一台可执行的机器。
     """
     # 1) 创建一张空的状态图，并指定图里流转的数据结构是 AgentState。
-    #    之后每个节点的输入、输出都必须是这个结构的（部分）字段。
     builder = StateGraph(AgentState)
 
-    # 2) 注册节点：相当于在流程图上画两个处理框。
-    #    参数1是节点名字（字符串），参数2是节点要执行的函数。
+    # 2) 注册节点
     builder.add_node("llm", llm_node)       # "llm"框：调用大模型做决策
     builder.add_node("tools", tools_node)   # "tools"框：执行具体工具
 
-    # 3) 添加固定边：表示无条件、固定的走向。
-    #    START 是 LangGraph 内置的虚拟起点，
-    #    这行的含义：图一启动，第一个执行的节点一定是 "llm"。
+    # 3) 固定边 START -> llm
     builder.add_edge(START, "llm")
 
-    # 4) 添加条件边：从 "llm" 出发，走向不是写死的，
-    #    而是每次执行完 llm_node 后调用 should_continue(state)，
-    #    根据它的返回值动态决定下一站。
-    #
-    #    第三个参数是「返回值 -> 节点名」的映射表：
-    #      should_continue 返回 "tools" → 跳到 "tools" 节点
-    #      should_continue 返回 END     → 结束整张图（END 是内置虚拟终点）
+    # 4) 条件边：llm 执行完由 should_continue 决定去 tools 还是 END
     builder.add_conditional_edges(
         "llm", should_continue, {"tools": "tools", END: END}
     )
 
-    # 5) 再加一条固定边：工具执行完后，无条件回到 "llm"。
-    #    这样大模型才能看到工具结果，决定下一步是继续调工具还是给最终答复。
-    #    （llm → tools → llm → tools ... 的循环就是这样形成的）
+    # 5) 固定边 tools -> llm（llm → tools → llm ... 的循环）
     builder.add_edge("tools", "llm")
 
-    # 6) compile：把上面"画"好的图编译成可执行对象。
-    #    编译后会校验图的合法性（比如节点是否都连通），
-    #    返回的对象提供 .invoke() / .stream() 等方法供外部驱动。
+    # 6) compile：校验图的合法性并生成可执行对象
     return builder.compile()
 
 
 # 模块加载时就把图编译好一次，之后所有请求共用这一个对象。
-# 为什么能共用？因为图本身不存任何用户数据——
-# 每次请求的对话消息、db 会话、用户 ID 都放在调用时传入的 AgentState 里，
-# 图只是一张固定的"流程图模板"。
+# 图本身不存任何用户数据——每次请求的消息、db 会话、用户对象都在
+# 调用时传入的 AgentState 里，图只是一张固定的"流程图模板"。
 agent_graph = build_agent_graph()

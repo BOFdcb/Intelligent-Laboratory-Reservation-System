@@ -15,6 +15,8 @@ const routes = [
       { path: 'admin/bookings', component: () => import('../views/AdminBookings.vue'), meta: { title: '预约审核', admin: true } },
       { path: 'admin/labs', component: () => import('../views/AdminLabs.vue'), meta: { title: '实验室管理', admin: true } },
       { path: 'admin/users', component: () => import('../views/AdminUsers.vue'), meta: { title: '用户管理', admin: true } },
+      { path: 'admin/audit', component: () => import('../views/AdminAudit.vue'), meta: { title: '工具调用审计', admin: true } },
+      { path: 'admin/analytics', component: () => import('../views/AdminAnalytics.vue'), meta: { title: '数据分析', admin: true } },
     ],
   },
 ]

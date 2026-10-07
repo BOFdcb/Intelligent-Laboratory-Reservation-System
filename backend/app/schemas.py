@@ -1,7 +1,7 @@
 from datetime import datetime, date, time
 from typing import Optional, List
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 
 # 统一响应
@@ -40,6 +40,7 @@ class UserOut(UserBase):
     model_config = ConfigDict(from_attributes=True)
     id: int
     role: str
+    credit_score: int = 100
     created_at: Optional[datetime] = None
 
 
@@ -104,11 +105,23 @@ class BookingBase(BaseModel):
 
 class BookingCreate(BookingBase):
     lab_id: int
+    # 团队预约：成员用户名列表（不含预约人本人）
+    members: List[str] = []
 
 
 class BookingUpdate(BaseModel):
     status: Optional[str] = None
     review_note: Optional[str] = None
+
+
+class BookingReschedule(BaseModel):
+    """用户改约请求：所有字段可选，传了什么改什么。"""
+    lab_id: Optional[int] = None
+    booking_date: Optional[date] = None
+    start_time: Optional[time] = None
+    end_time: Optional[time] = None
+    purpose: Optional[str] = None
+    members: Optional[List[str]] = None
 
 
 class BookingOut(BookingBase):
@@ -118,9 +131,44 @@ class BookingOut(BookingBase):
     lab_id: int
     status: str
     review_note: Optional[str] = ""
+    auto_reviewed: bool = False
+    participant_count: int = 1
+    # 团队成员用户名。ORM 同名为 BookingMember 对象列表，
+    # 用 before 校验器把对象转成用户名，否则 from_attributes 会报 string_type 错误
+    members: List[str] = []
     created_at: Optional[datetime] = None
     lab: Optional[LaboratoryOut] = None
     user: Optional[UserOut] = None
+
+    @field_validator("members", mode="before")
+    @classmethod
+    def _members_to_usernames(cls, value):
+        if not value:
+            return []
+        return [m if isinstance(m, str) else (m.user.username if m.user else "")
+                for m in value]
+
+
+# 设备级预约
+class EquipmentBookingCreate(BaseModel):
+    equipment_id: int
+    booking_date: date
+    start_time: time
+    end_time: time
+    purpose: Optional[str] = ""
+
+
+class EquipmentBookingOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    user_id: int
+    equipment_id: int
+    booking_date: date
+    start_time: time
+    end_time: time
+    purpose: Optional[str] = ""
+    status: str
+    created_at: Optional[datetime] = None
 
 
 # 列表分页包装

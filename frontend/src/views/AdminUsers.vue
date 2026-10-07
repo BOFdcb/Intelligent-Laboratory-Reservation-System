@@ -21,6 +21,22 @@
             </el-tag>
           </template>
         </el-table-column>
+        <el-table-column label="信用分" width="170">
+          <template #default="{ row }">
+            <div class="credit-cell">
+              <el-input-number
+                v-model="creditDraft[row.id]"
+                :min="0"
+                :max="100"
+                :step="5"
+                size="small"
+                controls-position="right"
+                style="width: 100px"
+              />
+              <el-button size="small" type="primary" plain @click="saveCredit(row)">保存</el-button>
+            </div>
+          </template>
+        </el-table-column>
         <el-table-column prop="created_at" label="注册时间" width="180">
           <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
         </el-table-column>
@@ -39,7 +55,8 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, reactive, onMounted } from 'vue'
+import { ElMessage } from 'element-plus'
 import api from '../api'
 
 const users = ref([])
@@ -47,6 +64,8 @@ const loading = ref(false)
 const page = ref(1)
 const size = 20
 const total = ref(0)
+// 每行一个信用分草稿：{ [userId]: score }
+const creditDraft = reactive({})
 
 function formatTime(t) {
   return t ? new Date(t).toLocaleString('zh-CN') : '-'
@@ -57,9 +76,21 @@ async function load() {
   try {
     const res = await api.get('/api/users', { params: { page: page.value, size } })
     users.value = res.data.items
-    total.value = res.data.total
+    users.value.forEach((u) => {
+      creditDraft[u.id] = u.credit_score ?? 100
+    })
   } finally {
     loading.value = false
+  }
+}
+
+async function saveCredit(row) {
+  const score = creditDraft[row.id]
+  try {
+    const res = await api.post(`/api/users/${row.id}/credit`, { credit_score: score })
+    ElMessage.success(res.message || '已更新')
+  } catch {
+    // 拦截器已提示错误
   }
 }
 
@@ -69,4 +100,5 @@ onMounted(load)
 <style scoped>
 .card-title { font-size: 16px; font-weight: 600; }
 .pager { margin-top: 16px; display: flex; justify-content: flex-end; }
+.credit-cell { display: flex; align-items: center; gap: 6px; }
 </style>

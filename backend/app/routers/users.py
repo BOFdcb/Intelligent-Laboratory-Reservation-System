@@ -60,3 +60,18 @@ def list_users(page: int = 1, size: int = 20, db: Session = Depends(get_db),
         "items": [UserOut.model_validate(u).model_dump(mode="json") for u in items],
         "total": total, "page": page, "size": size,
     })
+
+
+@router.post("/{user_id}/credit")
+def adjust_credit(user_id: int, payload: dict, db: Session = Depends(get_db),
+                  _: User = Depends(require_admin)):
+    """管理员手动调整用户信用分（如误扣后恢复、恶意行为扣分）。"""
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    score = payload.get("credit_score")
+    if not isinstance(score, int) or not (0 <= score <= 100):
+        raise HTTPException(status_code=400, detail="信用分需为 0-100 的整数")
+    user.credit_score = score
+    db.commit()
+    return ok({"credit_score": score}, "信用分已更新")

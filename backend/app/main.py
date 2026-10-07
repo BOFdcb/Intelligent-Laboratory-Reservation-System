@@ -1,3 +1,5 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -6,12 +8,27 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .config import settings
-from .database import Base, engine
-from .routers import auth, users, labs, bookings, chat
+from .database import Base, engine, run_lightweight_migrations
+from .routers import (
+    auth, users, labs, bookings, chat, equipment_bookings, admin,
+    notifications, analytics,
+)
+from .scheduler import start_scheduler, shutdown_scheduler
 
 Base.metadata.create_all(bind=engine)
+run_lightweight_migrations()
 
-app = FastAPI(title=settings.APP_NAME)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 启动：拉起 APScheduler 定时提醒 Agent（提醒/催办/超时释放）
+    start_scheduler()
+    yield
+    # 关闭：优雅停止调度器，避免线程泄漏
+    shutdown_scheduler()
+
+
+app = FastAPI(title=settings.APP_NAME, lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -46,7 +63,11 @@ app.include_router(auth.router)
 app.include_router(users.router)
 app.include_router(labs.router)
 app.include_router(bookings.router)
+app.include_router(equipment_bookings.router)
 app.include_router(chat.router)
+app.include_router(admin.router)
+app.include_router(notifications.router)
+app.include_router(analytics.router)
 
 
 @app.get("/api/health")

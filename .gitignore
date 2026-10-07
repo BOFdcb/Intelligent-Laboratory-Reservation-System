@@ -1,33 +1,52 @@
 # ===== 敏感配置（含真实 API 密钥，绝不提交）=====
+# .env 里存的是 MiniMax / SiliconFlow 的真实密钥，泄露会被盗用产生费用
 .env
 backend/.env
 *.env
+# 例外：.env.example 是脱敏模板（只留键名，不留值），需要提交供他人参考
 !.env.example
 !**/.env.example
 
 # ===== Python =====
+# 解释器自动生成的字节码缓存目录
 __pycache__/
+# 编译后的字节码 / 优化字节码文件
 *.py[cod]
+# pip 打包元数据（本项目不发布包，构建残留无需提交）
 *.egg-info/
+# 虚拟环境目录（几百 MB，依赖以 requirements.txt 为准）
 .venv/
 venv/
 env/
+# pytest 缓存
 .pytest_cache/
 
 # ===== 后端运行数据 =====
+# SQLite 数据库文件目录（lab.db 为本地运行数据，各机器各自生成）
 backend/data/
+# 用户上传的头像等文件（本地运行产物）
 backend/uploads/
+# 兜底：任何位置的 SQLite 数据库文件都不提交
 *.db
 *.sqlite3
+# ChromaDB 本地客户端模式残留（正确方式：Docker 容器 :8000，REST 直连）
+chroma_data/
 
 # ===== 前端 =====
+# npm 依赖目录（以 package.json + package-lock.json 为准）
 node_modules/
+# Vite 生产构建产物
 frontend/dist/
 dist/
+# Vite 本地环境覆盖文件（*.local 按惯例不入库）
 *.local
 
 # ===== 编辑器 / 系统 =====
+# VS Code 工作区配置（含个人化设置）
 .vscode/
+# JetBrains 系列 IDE 配置
 .idea/
+# macOS 目录元数据
 .DS_Store
+# Windows 缩略图缓存
 Thumbs.db
